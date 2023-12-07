@@ -1,5 +1,15 @@
 #include "dot_util.h"
 #include "RadioEvent.h"
+#include "PinNames.h"
+#include "mbed.h"
+#include "MQ135.h"
+#include "DHT.h"
+#include <cstdio>
+
+MQ135 MQ135(GPIO0); 
+#define   DHT_DATA_PIN  GPIO2
+
+DHT sensor(DHT_DATA_PIN, DHT11);                    //DHT(PinName pin, eType DHTtype)
 
 #if ACTIVE_EXAMPLE == OTA_EXAMPLE
 
@@ -9,10 +19,10 @@
 //     devices, the LoRa stack is not included. The libmDot library should //
 //     be imported if building for mDot devices. The libxDot library       //
 //     should be imported if building for xDot devices.                    //
-// * https://developer.mbed.org/teams/MultiTech/code/libmDot-dev/          //
-// * https://developer.mbed.org/teams/MultiTech/code/libmDot/              //
-// * https://developer.mbed.org/teams/MultiTech/code/libxDot-dev/          //
-// * https://developer.mbed.org/teams/MultiTech/code/libxDot/              //
+// * https://developer.mbed.org/teams/MultiTech/code/libmDot-dev-mbed5/    //
+// * https://developer.mbed.org/teams/MultiTech/code/libmDot-mbed5/        //
+// * https://developer.mbed.org/teams/MultiTech/code/libxDot-dev-mbed5/    //
+// * https://developer.mbed.org/teams/MultiTech/code/libxDot-mbed5/        //
 /////////////////////////////////////////////////////////////////////////////
 
 /////////////////////////////////////////////////////////////
@@ -22,11 +32,11 @@
 // * either the network name and passphrase can be used or //
 //     the network ID (8 bytes) and KEY (16 bytes)         //
 /////////////////////////////////////////////////////////////
-static std::string network_name = "MultiTech";
-static std::string network_passphrase = "MultiTech";
+static std::string network_name = "Lab10IsTheBest";
+static std::string network_passphrase = "Passphrase123";
 static uint8_t network_id[] = { 0x6C, 0x4E, 0xEF, 0x66, 0xF4, 0x79, 0x86, 0xA6 };
 static uint8_t network_key[] = { 0x1F, 0x33, 0xA1, 0x70, 0xA5, 0xF1, 0xFD, 0xA0, 0xAB, 0x69, 0x7A, 0xAE, 0x2B, 0x95, 0x91, 0x6B };
-static uint8_t frequency_sub_band = 0;
+static uint8_t frequency_sub_band = 7;
 static lora::NetworkType network_type = lora::PUBLIC_LORAWAN;
 static uint8_t join_delay = 5;
 static uint8_t ack = 0;
@@ -46,8 +56,6 @@ mbed::UnbufferedSerial pc(USBTX, USBRX);
 #if defined(TARGET_XDOT_L151CC)
 I2C i2c(I2C_SDA, I2C_SCL);
 ISL29011 lux(i2c);
-#elif defined(TARGET_XDOT_MAX32670)
-// no analog available
 #else
 AnalogIn lux(XBEE_AD0);
 #endif
@@ -73,9 +81,6 @@ int main() {
 
     // attach the custom events handler
     dot->setEvents(&events);
-
-    // Enable FOTA for multicast support
-    Fota::getInstance(dot);
 
     if (!dot->getStandbyFlag() && !dot->getPreserveSession()) {
         logInfo("mbed-os library version: %d.%d.%d", MBED_MAJOR_VERSION, MBED_MINOR_VERSION, MBED_PATCH_VERSION);
@@ -134,6 +139,11 @@ int main() {
         dot->restoreNetworkSession();
     }
 
+    char out[150];
+    int error = 0;
+    float h = 0.0f, c = 0.0f, f = 0.0f, k = 0.0f, ppm = 0.0f, corrected_ppm = 0.0f;
+    float rzero = MQ135.getRZero();
+
     while (true) {
         uint16_t light;
         std::vector<uint8_t> tx_data;
@@ -142,6 +152,29 @@ int main() {
         if (!dot->getNetworkJoinStatus()) {
             join_network();
         }
+        
+        error = sensor.readData();                  //read error value
+        if (error == 0)                             //case: no error 
+        {
+            c = sensor.ReadTemperature(CELCIUS);
+            f = sensor.ReadTemperature(FARENHEIT);
+            h = sensor.ReadHumidity();
+            // printf("Temp *F = %4.2f\n", f); 
+            // printf("Hum. %% = %4.2f\n", h);
+        }
+        
+        ppm = MQ135.getPPM(rzero);
+        // printf("PPM = %4.2f\n", ppm);
+        corrected_ppm = MQ135.getCorrectedPPM(c, h, rzero);
+        // printf("Corrected PPM = %4.2f\n\n", ppm);
+        // ThisThread::sleep_for(1000);
+        sprintf(out, "%f,%f,%f,%f;", f, h, ppm, corrected_ppm);
+        // sprintf(out, "Hello");
+        for(int i = 0; i < 112; i++) {
+            tx_data.push_back(out[i]);
+        }
+        send_data(tx_data);
+        ThisThread::sleep_for(5000);                                 //wait 2 second
 
 #if defined(TARGET_XDOT_L151CC)
         // configure the ISL29011 sensor on the xDot-DK for continuous ambient light sampling, 16 bit conversion, and maximum range
@@ -158,13 +191,6 @@ int main() {
 
         // put the LSL29011 ambient light sensor into a low power state
         lux.setMode(ISL29011::PWR_DOWN);
-#elif defined(TARGET_XDOT_MAX32670)
-        // get some dummy data and send it to the gateway
-        light = rand();
-        tx_data.push_back((light >> 8) & 0xFF);
-        tx_data.push_back(light & 0xFF);
-        logInfo("light: %lu [0x%04X]", light, light);
-        send_data(tx_data);
 #else
         // get some dummy data and send it to the gateway
         light = lux.read_u16();
